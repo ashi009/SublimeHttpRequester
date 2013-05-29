@@ -4,6 +4,7 @@ import sublime_plugin
 import socket
 import types
 import threading
+import string
 
 gPrevHttpRequest = ""
 
@@ -67,15 +68,17 @@ class HttpRequester(threading.Thread):
 
         selection = self.selection
 
-        lines = selection.split("\n")
+        requestPOSTBody = ""
+        POSTBodyPosition = selection.find(self.HTTP_POST_BODY_START)
 
-        # trim any whitespaces for all lines and remove lines starting with a pound character
-        for idx in range(len(lines) - 1, -1, -1):
-            lines[idx] = lines[idx].lstrip()
-            lines[idx] = lines[idx].rstrip()
-            if (len(lines[idx]) > 0):
-                if lines[idx][0] == "#":
-                    del lines[idx]
+        if POSTBodyPosition < 0:
+            config = selection
+        else:
+            config = selection[0:POSTBodyPosition]
+            requestPOSTBody = selection[POSTBodyPosition + len(self.HTTP_POST_BODY_START):].encode('utf-8')
+
+        lines = filter(lambda x: x[0] != '#', \
+            map(string.strip, config.splitlines()))
 
         # get request web address and req. type from the first line
         (url, port, request_page, requestType, httpProtocol) = self.extractRequestParams(lines[0])
@@ -84,7 +87,7 @@ class HttpRequester(threading.Thread):
         print requestType, " ", httpProtocol, " HOST ", url, " PORT ", port, " PAGE: ", request_page
 
         # get request headers from the lines below the http address
-        (extra_headers, requestPOSTBody, proxyURL, proxyPort, clientSSLCertificateFile,
+        (extra_headers, proxyURL, proxyPort, clientSSLCertificateFile,
          clientSSLKeyFile) = self.extractExtraHeaders(lines)
 
         headers = {"User-Agent": FAKE_CURL_UA, "Accept": "*/*"}
@@ -199,39 +202,30 @@ class HttpRequester(threading.Thread):
         return (url, port, request_page, requestType, protocol)
 
     def getHeaderNameAndValueFromLine(self, line):
-        readingPOSTBody = False
 
-        line = line.lstrip()
-        line = line.rstrip()
-
-        if line == self.HTTP_POST_BODY_START:
-            readingPOSTBody = True
+        header_parts = line.split(":")
+        if len(header_parts) == 2:
+            header_name = header_parts[0].rstrip()
+            header_value = header_parts[1].lstrip()
+            return (header_name, header_value, readingPOSTBody)
         else:
-            header_parts = line.split(":")
-            if len(header_parts) == 2:
+            # may be proxy address URL:port
+            if len(header_parts) > 2:
                 header_name = header_parts[0].rstrip()
-                header_value = header_parts[1].lstrip()
-                return (header_name, header_value, readingPOSTBody)
-            else:
-                # may be proxy address URL:port
-                if len(header_parts) > 2:
-                    header_name = header_parts[0].rstrip()
-                    header_value = header_parts[1]
-                    header_value = header_value.lstrip()
-                    header_value = header_value.rstrip()
-                    for idx in range(2, len(header_parts)):
-                        currentValue = header_parts[idx]
-                        currentValue = currentValue.lstrip()
-                        currentValue = currentValue.rstrip()
-                        header_value = header_value + ":" + currentValue
+                header_value = header_parts[1]
+                header_value = header_value.lstrip()
+                header_value = header_value.rstrip()
+                for idx in range(2, len(header_parts)):
+                    currentValue = header_parts[idx]
+                    currentValue = currentValue.lstrip()
+                    currentValue = currentValue.rstrip()
+                    header_value = header_value + ":" + currentValue
 
-                    return (header_name, header_value, readingPOSTBody)
+                return (header_name, header_value)
 
-        return (None, None, readingPOSTBody)
+        return (None, None)
 
     def extractExtraHeaders(self, headerLines):
-        requestPOSTBody = ""
-        readingPOSTBody = False
         lastLine = False
         numLines = len(headerLines)
 
@@ -245,25 +239,18 @@ class HttpRequester(threading.Thread):
         if len(headerLines) > 1:
             for i in range(1, numLines):
                 lastLine = (i == numLines - 1)
-                if not(readingPOSTBody):
-                    (header_name, header_value, readingPOSTBody) = self.getHeaderNameAndValueFromLine(headerLines[i])
-                    if header_name is not None:
-                        if header_name == self.HTTP_PROXY_HEADER:
-                            (proxyURL, proxyPort) = self.getProxyURLandPort(header_value)
-                        elif header_name == self.HTTPS_SSL_CLIENT_CERT:
-                            clientSSLCertificateFile = header_value
-                        elif header_name == self.HTTPS_SSL_CLIENT_KEY:
-                            clientSSLKeyFile = header_value
-                        else:
-                            extra_headers[header_name] = header_value
-                else:  # read all following lines as HTTP POST body
-                    lineBreak = ""
-                    if not(lastLine):
-                        lineBreak = "\n"
+                (header_name, header_value) = self.getHeaderNameAndValueFromLine(headerLines[i])
+                if header_name is not None:
+                    if header_name == self.HTTP_PROXY_HEADER:
+                        (proxyURL, proxyPort) = self.getProxyURLandPort(header_value)
+                    elif header_name == self.HTTPS_SSL_CLIENT_CERT:
+                        clientSSLCertificateFile = header_value
+                    elif header_name == self.HTTPS_SSL_CLIENT_KEY:
+                        clientSSLKeyFile = header_value
+                    else:
+                        extra_headers[header_name] = header_value
 
-                    requestPOSTBody = requestPOSTBody + headerLines[i] + lineBreak
-
-        return (extra_headers, requestPOSTBody, proxyURL, proxyPort, clientSSLCertificateFile, clientSSLKeyFile)
+        return (extra_headers, proxyURL, proxyPort, clientSSLCertificateFile, clientSSLKeyFile)
 
     def getProxyURLandPort(self, proxyAddress):
         proxyURL = ""
